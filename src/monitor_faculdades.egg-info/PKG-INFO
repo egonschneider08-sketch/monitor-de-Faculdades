@@ -1,0 +1,117 @@
+Metadata-Version: 2.4
+Name: monitor-faculdades
+Version: 1.0.0
+Summary: Monitor de editais e vagas de faculdades com alertas no WhatsApp
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31
+Requires-Dist: beautifulsoup4>=4.12
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+
+# Monitor de Faculdades
+
+Verifica páginas oficiais de IFSC, UDESC e FURB todo dia e manda **mensagem no WhatsApp**
+quando aparece algo novo sobre ingresso (edital, inscrições, vagas remanescentes, cadastro
+de reserva, resultado, convocação), sem você precisar pesquisar.
+
+```
+Monitor de Faculdades
+🎓 Nova oportunidade — IFSC Joinville
+Curso: engenharia mecânica
+Modalidade: Ingresso por histórico escolar
+Status: Inscrições abertas
+Prazo: 10/11/2026 a 20/11/2026
+Fonte: https://...
+
+⚠️ Detecção automática: confira o edital oficial antes de agir.
+```
+
+## Como funciona
+
+1. Baixa cada página de `config/sources.toml`.
+2. Quebra o HTML em trechos (item de lista, parágrafo, linha de tabela) com o link mais próximo.
+3. Um trecho vira **oportunidade** se citar um curso (ou termo) que você acompanha **e** um sinal
+   de ingresso (edital, inscrições, vagas remanescentes...). Curso, modalidade, status e datas são
+   extraídos por regras do trecho.
+4. Cada trecho tem uma impressão digital (hash). Só o que **ainda não foi visto** gera alerta, e
+   mudança de prazo no texto gera um novo alerta.
+5. A **primeira execução só registra a linha de base** (não despeja o histórico no seu WhatsApp).
+6. Envio falhou? Fica pendente e é reenviado na próxima execução.
+7. Fonte falhando 3 vezes seguidas gera um aviso (provável URL mudada).
+
+## Estrutura
+
+```
+src/monitor_faculdades/
+  cli.py                 comandos: run, validate, test-notify, history
+  bootstrap.py           monta as dependências (raiz de composição)
+  config.py              Settings lidas do ambiente/.env
+  exceptions.py
+  models/                Source, Opportunity, PageBlock, RunSummary
+  schemas/               leitura e validação de sources.toml
+  database/              conexão SQLite + migrations/*.sql versionadas
+  repositories/          acesso ao banco (oportunidades, estado das fontes, execuções)
+  parsers/               HTML -> blocos de texto
+  services/              detector de oportunidades, notificação, orquestração
+  integrations/          HTTP, CallMeBot, WhatsApp Cloud API, e-mail, console
+  formatters/            textos das mensagens
+  utils/                 texto, datas, hash, relógio
+config/sources.toml      fontes, cursos e termos monitorados
+tests/                   pytest (22 testes)
+.github/workflows/       execução diária no GitHub Actions
+Dockerfile, docker-compose.yml
+```
+
+## Instalação local
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env          # edite com seus dados
+monitor-faculdades validate   # confere .env e sources.toml
+monitor-faculdades run --dry-run   # mostra tudo que casa HOJE, sem gravar nem enviar
+monitor-faculdades test-notify     # manda mensagem de teste pelo canal configurado
+monitor-faculdades run
+pytest
+```
+
+`--dry-run` é o melhor jeito de ajustar `sources.toml`: ele imprime o que o detector acharia em
+cada página agora. Se não aparecer nada, a URL pode estar errada ou a página depende de JavaScript.
+
+## Canal WhatsApp
+
+Defina `NOTIFY_CHANNELS` (pode combinar, separado por vírgula).
+
+| Canal | Quando usar | Observação |
+|---|---|---|
+| `callmebot` | Uso pessoal, mais simples | Serviço gratuito de terceiros, não oficial. Siga as instruções em callmebot.com para obter a `CALLMEBOT_APIKEY` do seu número. |
+| `whatsapp_cloud` | Caminho oficial (Meta) | Texto livre só é entregue na janela de 24 h após você escrever para o número; para alertas diários fora dela a Meta exige **template aprovado**, que este código ainda não envia. |
+| `email` | Backup | Gmail com senha de app. |
+| `console` | Testes | Imprime no terminal. |
+
+Recomendação: `callmebot,email` (WhatsApp + e-mail de backup).
+
+## Rodando todo dia
+
+**GitHub Actions (grátis):** repositório privado, envie o projeto e crie em
+*Settings → Secrets and variables → Actions* os secrets de `.env.example` que você usa
+(inclua `NOTIFY_CHANNELS`). O workflow roda às 07:00 (Brasília), executa os testes, envia os
+alertas e faz commit de `data/monitor.db` para lembrar o que já viu. Teste em *Actions → Run workflow*.
+
+**Docker:** `docker compose up -d --build` (verifica a cada 24 h; o banco fica em `./data`).
+
+## Editando as fontes
+
+Em `config/sources.toml`: `courses` (o trecho precisa citar um deles) e/ou `required_terms`
+(o trecho precisa conter um deles). Acentos e maiúsculas são ignorados. Para FURB/Economia
+1.2027 já há duas fontes com `economia`/`ciências econômicas`; a Univille vem desativada.
+As URLs vieram do pacote anterior e **não foram verificadas**: confira no navegador.
+
+## Limitações
+
+- É heurístico: lê o texto da página, não o PDF do edital. Status e prazo podem ser imprecisos;
+  **sempre confirme no edital oficial**.
+- Páginas que montam o conteúdo com JavaScript ou bloqueiam robôs podem não ser lidas.
+- Não faz inscrição nem avalia se você é elegível.

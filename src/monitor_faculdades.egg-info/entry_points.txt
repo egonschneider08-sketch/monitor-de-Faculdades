@@ -1,0 +1,2 @@
+[console_scripts]
+monitor-faculdades = monitor_faculdades.cli:main
